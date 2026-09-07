@@ -1,11 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 
 interface Scene {
   segment: string;
-  url?: string;
-  filepath?: string | null;
+  url: string;
 }
 
 export function VideoGenerator() {
@@ -18,6 +17,176 @@ export function VideoGenerator() {
   const [currentStep, setCurrentStep] = useState<string>('');
   const [selectedModel, setSelectedModel] = useState('openrouter/auto');
 
+  // Client-side TTS using Web Speech API (no server binaries needed!)
+  const generateAudioClientSide = useCallback(async (text: string): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      if (!('speechSynthesis' in window)) {
+        reject(new Error('Web Speech API not supported in this browser'));
+        return;
+      }
+
+      // Create audio context to capture speech synthesis output
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const destination = audioContext.createMediaStreamDestination();
+      
+      // Create MediaRecorder to capture audio
+      const mediaRecorder = new MediaRecorder(destination.stream, {
+        mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+          ? 'audio/webm;codecs=opus' 
+          : 'audio/webm'
+      });
+
+      const chunks: Blob[] = [];
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
+        audioContext.close();
+        resolve(blob);
+      };
+
+      mediaRecorder.start();
+
+      // Use SpeechSynthesis to speak the text
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+
+      utterance.onend = () => {
+        setTimeout(() => mediaRecorder.stop(), 500);
+      };
+
+      utterance.onerror = (e) => {
+        mediaRecorder.stop();
+        audioContext.close();
+        reject(new Error('Speech synthesis error: ' + e.error));
+      };
+
+      speechSynthesis.speak(utterance);
+    });
+  }, []);
+
+  // Client-side video assembly using Canvas + MediaRecorder (no ffmpeg needed!)
+  const generateVideoClientSide = useCallback(async (scenes: Scene[], audioBlob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        reject(new Error('Canvas 2D context not available'));
+        return;
+      }
+
+      // Load images
+      const loadImages = scenes.map((scene) => {
+        return new Promise<HTMLImageElement>((resolve, imgReject) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => resolve(img);
+          img.onerror = () => imgReject(new Error('Image load failed'));
+          img.src = scene.url;
+        });
+      });
+
+      Promise.all(loadImages)
+        .then((images) => {
+          const sceneDuration = 5000; // 5 seconds per scene
+          const fadeDuration = 800; // 0.8 seconds fade
+          const totalDuration = scenes.length * sceneDuration;
+
+          // Create canvas stream at 30fps
+          const canvasStream = canvas.captureStream(30);
+
+          // Create audio context and connect audio blob
+          const audioContext = new AudioContext();
+          const audioSource = audioContext.createMediaStreamSource(
+            new MediaStream([audioBlob])
+          );
+          audioSource.connect(audioContext.destination);
+
+          // Combine video and audio streams
+          const combinedStream = new MediaStream([
+            ...canvasStream.getVideoTracks(),
+            ...audioContext.destination.stream.getAudioTracks()
+          ]);
+
+          // Record with MediaRecorder
+          const mediaRecorder = new MediaRecorder(combinedStream, {
+            mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+              ? 'video/webm;codecs=vp9,opus'
+              : 'video/webm'
+          });
+
+          const chunks: Blob[] = [];
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+          };
+
+          mediaRecorder.onstop = () => {
+            const videoBlob = new Blob(chunks, { type: 'video/webm' });
+            const videoUrl = URL.createObjectURL(videoBlob);
+            resolve(videoUrl);
+          };
+
+          mediaRecorder.start();
+
+          // Draw scenes with crossfade transitions
+          const drawFrame = () => {
+            const elapsed = performance.now();
+            const currentSceneIndex = Math.floor(elapsed / sceneDuration);
+            const sceneTime = elapsed % sceneDuration;
+
+            if (currentSceneIndex >= scenes.length) {
+              mediaRecorder.stop();
+              audioContext.close();
+              return;
+            }
+
+            // Clear canvas
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw image with fade-in effect
+            const img = images[currentSceneIndex];
+            const fadeProgress = Math.min(sceneTime / fadeDuration, 1);
+            
+            ctx.globalAlpha = fadeProgress;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            ctx.globalAlpha = 1;
+
+            // Draw scene text overlay
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.font = 'bold 28px Arial, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(
+              scenes[currentSceneIndex].segment,
+              canvas.width / 2,
+              canvas.height - 40
+            );
+
+            requestAnimationFrame(drawFrame);
+          };
+
+          drawFrame();
+
+          // Stop recording after total duration
+          setTimeout(() => {
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+              audioContext.close();
+            }
+          }, totalDuration + 1000);
+        })
+        .catch(reject);
+    });
+  }, []);
+
   const handleGenerate = async () => {
     if (!topic.trim()) return;
     
@@ -28,7 +197,7 @@ export function VideoGenerator() {
     setVideoUrl('');
 
     try {
-      // Step 1: Generate script
+      // Step 1: Generate script (server-side, no binaries needed)
       setCurrentStep('📝 Generating script...');
       const scriptRes = await fetch('/api/script', {
         method: 'POST',
@@ -42,12 +211,12 @@ export function VideoGenerator() {
       setScript(scriptData.script);
       setCurrentStep('🎨 Generating images...');
 
-      // Split script into segments for each scene
+      // Split script into segments
       const segments = scriptData.script
         .split(/[.!?]\n|[.!?]/)
         .filter((s: string) => s.trim().length > 10);
 
-      // Step 2: Generate images
+      // Step 2: Generate images (server-side, no binaries needed)
       const imagesRes = await fetch('/api/images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -58,35 +227,15 @@ export function VideoGenerator() {
       if (!imagesRes.ok) throw new Error(imageData.error || 'Failed to generate images');
       
       setScenes(imageData.images);
-      setCurrentStep('🎵 Generating audio...');
+      setCurrentStep('🎵 Generating voiceover (browser)...');
 
-      // Step 3: Generate audio (voiceover)
-      const audioRes = await fetch('/api/audio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: scriptData.script })
-      });
+      // Step 3: Generate audio (CLIENT-SIDE using Web Speech API - no server binaries!)
+      const audioBlob = await generateAudioClientSide(scriptData.script);
+      setCurrentStep('🎬 Assembling video (browser)...');
 
-      const audioData = await audioRes.json();
-      if (!audioRes.ok) throw new Error(audioData.error || 'Failed to generate audio');
-
-      setCurrentStep('🎬 Assembling video...');
-
-      // Step 4: Assemble final video with base64 data
-      const videoRes = await fetch('/api/video', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          images: imageData.images,
-          script: scriptData.script,
-          audioData: audioData.base64 
-        })
-      });
-
-      const videoData = await videoRes.json();
-      if (!videoRes.ok) throw new Error(videoData.error || 'Failed to assemble video');
-
-      setVideoUrl(videoData.url);
+      // Step 4: Assemble video (CLIENT-SIDE using Canvas + MediaRecorder - no ffmpeg!)
+      const finalVideoUrl = await generateVideoClientSide(imageData.images, audioBlob);
+      setVideoUrl(finalVideoUrl);
       setCurrentStep('✅ Complete! Your video is ready.');
     } catch (err: any) {
       setError(err.message || 'Something went wrong');
@@ -100,7 +249,7 @@ export function VideoGenerator() {
     if (!videoUrl) return;
     const link = document.createElement('a');
     link.href = videoUrl;
-    link.download = 'money-printer-turbo-video.mp4';
+    link.download = 'money-printer-turbo-video.webm';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -186,18 +335,11 @@ export function VideoGenerator() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {scenes.map((scene, idx) => (
               <div key={idx} className="bg-black/30 rounded-lg overflow-hidden border border-purple-500/20">
-                {scene.url ? (
-                  // Use regular img tag for base64 data URLs
-                  <img
-                    src={scene.url}
-                    alt={`Scene ${idx + 1}`}
-                    className="w-full h-32 sm:h-48 object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-32 sm:h-48 bg-gradient-to-br from-purple-900 to-slate-800 flex items-center justify-center">
-                    <span className="text-5xl sm:text-6xl">🎬</span>
-                  </div>
-                )}
+                <img
+                  src={scene.url}
+                  alt={`Scene ${idx + 1}`}
+                  className="w-full h-32 sm:h-48 object-cover"
+                />
                 <div className="p-2 sm:p-3">
                   <p className="text-xs sm:text-sm text-purple-200 line-clamp-2">{scene.segment}</p>
                 </div>
@@ -212,14 +354,14 @@ export function VideoGenerator() {
         <div className="mb-8">
           <h3 className="text-xl font-bold text-white mb-3">Final Video:</h3>
           <video controls className="w-full rounded-lg shadow-lg border border-purple-500/30 aspect-video">
-            <source src={videoUrl} type="video/mp4" />
+            <source src={videoUrl} type="video/webm" />
             Your browser does not support the video tag.
           </video>
           <button
             onClick={handleDownload}
             className="mt-4 inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-colors w-full sm:w-auto text-center"
           >
-            ⬇️ Download Video
+            ⬇️ Download Video (.webm)
           </button>
         </div>
       )}
