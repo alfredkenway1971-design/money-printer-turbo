@@ -98,18 +98,18 @@ export function VideoGenerator() {
   };
 
   return (
-    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-purple-500/30 shadow-2xl">
+    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 sm:p-8 border border-purple-500/30 shadow-2xl">
       {/* Input Section */}
-      <div className="mb-8">
+      <div className="mb-6 sm:mb-8">
         <label className="block text-lg font-semibold text-white mb-3">
           Enter your video topic:
         </label>
-        <div className="flex gap-3 mb-3">
+        <div className="flex flex-col sm:flex-row gap-3 mb-3">
           <input
             type="text"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            placeholder="e.g., 'The future of renewable energy' or 'How AI is changing healthcare'"
+            placeholder="e.g., 'The future of renewable energy'"
             className="flex-1 px-4 py-3 bg-white/10 border border-purple-500/30 rounded-lg 
                       text-white placeholder-purple-300 focus:outline-none focus:ring-2 focus:ring-purple-500"
             disabled={isLoading}
@@ -117,7 +117,7 @@ export function VideoGenerator() {
           <button
             onClick={handleGenerate}
             disabled={isLoading || !topic.trim()}
-            className="px-8 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold
+            className="px-6 sm:px-8 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold
                       rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all
                       disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
@@ -128,9 +128,10 @@ export function VideoGenerator() {
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
           disabled={isLoading}
-          className="w-full md:w-96 px-4 py-2 bg-white/10 border border-purple-500/30 rounded-lg 
+          className="w-full px-4 py-2 bg-white/10 border border-purple-500/30 rounded-lg 
                     text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
         >
+          <option value="openrouter/auto">OpenRouter Auto (Best Value)</option>
           <option value="google/gemini-3.8-flash">Google Gemini 3.8 Flash</option>
           <option value="qwen/qwen3.8-max-0902">Qwen 3.8 Max</option>
           <option value="deepseek/deepseek-v4-flash-vision-exp">DeepSeek V4 Flash</option>
@@ -173,7 +174,7 @@ export function VideoGenerator() {
       {scenes.length > 0 && (
         <div className="mb-8">
           <h3 className="text-xl font-bold text-white mb-3">Generated Scenes:</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {scenes.map((scene, idx) => (
               <div key={idx} className="bg-black/30 rounded-lg overflow-hidden border border-purple-500/20">
                 {scene.url ? (
@@ -182,15 +183,15 @@ export function VideoGenerator() {
                     alt={`Scene ${idx + 1}`}
                     width={320}
                     height={180}
-                    className="w-full h-48 object-cover"
+                    className="w-full h-32 sm:h-48 object-cover"
                   />
                 ) : (
-                  <div className="w-full h-48 bg-gradient-to-br from-purple-900 to-slate-800 flex items-center justify-center">
-                    <span className="text-6xl">🎬</span>
+                  <div className="w-full h-32 sm:h-48 bg-gradient-to-br from-purple-900 to-slate-800 flex items-center justify-center">
+                    <span className="text-5xl sm:text-6xl">🎬</span>
                   </div>
                 )}
-                <div className="p-3">
-                  <p className="text-sm text-purple-200">{scene.segment}</p>
+                <div className="p-2 sm:p-3">
+                  <p className="text-xs sm:text-sm text-purple-200 line-clamp-2">{scene.segment}</p>
                 </div>
               </div>
             ))}
@@ -202,14 +203,14 @@ export function VideoGenerator() {
       {videoUrl && (
         <div className="mb-8">
           <h3 className="text-xl font-bold text-white mb-3">Final Video:</h3>
-          <video controls className="w-full rounded-lg shadow-lg border border-purple-500/30">
+          <video controls className="w-full rounded-lg shadow-lg border border-purple-500/30 aspect-video">
             <source src={videoUrl} type="video/mp4" />
             Your browser does not support the video tag.
           </video>
           <a
             href={videoUrl}
             download
-            className="mt-4 inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-colors"
+            className="mt-4 inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-colors w-full sm:w-auto text-center"
           >
             ⬇️ Download Video
           </a>
