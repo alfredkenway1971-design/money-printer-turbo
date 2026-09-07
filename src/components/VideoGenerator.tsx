@@ -1,12 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import Image from 'next/image';
 
 interface Scene {
   segment: string;
   url?: string;
-  filepath?: string;
+  filepath?: string | null;
 }
 
 export function VideoGenerator() {
@@ -73,14 +72,14 @@ export function VideoGenerator() {
 
       setCurrentStep('🎬 Assembling video...');
 
-      // Step 4: Assemble final video
+      // Step 4: Assemble final video with base64 data
       const videoRes = await fetch('/api/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           images: imageData.images,
           script: scriptData.script,
-          audioPath: audioData.filepath 
+          audioData: audioData.base64 
         })
       });
 
@@ -95,6 +94,16 @@ export function VideoGenerator() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleDownload = () => {
+    if (!videoUrl) return;
+    const link = document.createElement('a');
+    link.href = videoUrl;
+    link.download = 'money-printer-turbo-video.mp4';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
@@ -178,11 +187,10 @@ export function VideoGenerator() {
             {scenes.map((scene, idx) => (
               <div key={idx} className="bg-black/30 rounded-lg overflow-hidden border border-purple-500/20">
                 {scene.url ? (
-                  <Image
+                  // Use regular img tag for base64 data URLs
+                  <img
                     src={scene.url}
                     alt={`Scene ${idx + 1}`}
-                    width={320}
-                    height={180}
                     className="w-full h-32 sm:h-48 object-cover"
                   />
                 ) : (
@@ -207,13 +215,12 @@ export function VideoGenerator() {
             <source src={videoUrl} type="video/mp4" />
             Your browser does not support the video tag.
           </video>
-          <a
-            href={videoUrl}
-            download
+          <button
+            onClick={handleDownload}
             className="mt-4 inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-colors w-full sm:w-auto text-center"
           >
             ⬇️ Download Video
-          </a>
+          </button>
         </div>
       )}
     </div>

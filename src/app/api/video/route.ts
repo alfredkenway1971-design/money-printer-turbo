@@ -1,75 +1,65 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
-import { mkdirSync, existsSync, statSync } from 'fs';
-import { join } from 'path';
+import { pipeline } from 'stream';
+import { promisify } from 'util';
+
+const pipelineAsync = promisify(pipeline);
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const images: Array<{filepath?: string; url?: string}> = body.images || [];
-    const audioPath = body.audioPath;
+    const images = body.images || [];
+    const audioData = body.audioData; // base64 audio data
 
     if (!images || images.length === 0) {
       return NextResponse.json({ error: 'Images array required' }, { status: 400 });
     }
 
-    const outputDir = join(process.cwd(), 'public', 'output');
-    mkdirSync(outputDir, { recursive: true });
-    
-    const outputFile = join(outputDir, `video_${Date.now()}.mp4`);
-
-    // Filter valid images
-    const validImages = images.filter(img => img.filepath || img.url);
-    if (validImages.length === 0) {
-      return NextResponse.json({ error: 'No valid images provided' }, { status: 400 });
-    }
-
-    const n = validImages.length;
+    // Build ffmpeg command with base64 data URLs
+    const args: string[] = [];
     const sceneDuration = 5; // seconds per scene
     const fadeDuration = 0.8; // transition duration between scenes
 
-    // Build ffmpeg args as proper array
-    const args: string[] = [];
-
-    // Add each image input
-    for (let i = 0; i < n; i++) {
-      const filepath = validImages[i].filepath || validImages[i].url!;
-      args.push('-loop', '1', '-t', String(sceneDuration), '-i', filepath);
+    // Add each image input (using data URLs)
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      // Extract base64 data from data URL
+      const base64Data = img.url?.replace(/^data:image\/\w+;base64,/, '');
+      if (base64Data) {
+        args.push('-loop', '1', '-t', String(sceneDuration), '-i', `data:image/jpeg;base64,${base64Data}`);
+      }
     }
 
-    // Check if audio is valid
-    const hasAudio = audioPath && existsSync(audioPath) && statSync(audioPath).size > 0;
-    if (hasAudio) {
-      args.push('-i', audioPath);
+    // Add audio if provided
+    let audioStreamIdx = images.length;
+    if (audioData) {
+      const audioBase64 = audioData.replace(/^data:audio\/\w+;base64,/, '');
+      args.push('-i', `data:audio/mp4;base64,${audioBase64}`);
+      audioStreamIdx = images.length + 1;
     }
 
     // Build filter complex for crossfade transitions
     let filterComplex = '';
-    
+    const n = images.length;
+
     if (n === 1) {
       // Single image: just scale/pad
       filterComplex = `[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[vfinal]`;
     } else {
       // Multi-image: build linear xfade chain
-      // Pattern: [0:v][1:v]xfade -> [v0], [v0][2:v]xfade -> [v1], ..., [v_{n-3}][{n-1}:v]xfade -> [vfinal]
-      
       const filters: string[] = [];
       
       for (let i = 0; i < n - 1; i++) {
         const nextInputIdx = i + 1;
-        // Offset accumulates: base time = scene * iteration minus any overlap
         const offset = (sceneDuration - fadeDuration) * i;
         
         if (i === 0) {
-          // First transition: input[0:v][1:v]xfade -> [v0]
           filters.push(`[${i}:v][${nextInputIdx}:v]xfade=transition=fade:duration=${fadeDuration}:offset=${offset}[v${i}]`);
         } else {
-          // Subsequent transitions: [v_{prev}][input_next:v]xfade -> [v_curr]
           filters.push(`[v${i-1}][${nextInputIdx}:v]xfade=transition=fade:duration=${fadeDuration}:offset=${offset}[v${i}]`);
         }
       }
       
-      // Scale and pad the final intermediate output to fullscreen
       const lastV = n - 2;
       filters.push(`[v${lastV}]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[vfinal]`);
       
@@ -79,9 +69,8 @@ export async function POST(req: Request) {
     // Final output command
     args.push('-filter_complex', filterComplex);
     
-    if (hasAudio) {
-      const audioStreamIdx = n; // audio comes after all n image inputs
-      args.push('-map', '[vfinal]', '-map', `${audioStreamIdx}:a`);
+    if (audioData) {
+      args.push('-map', '[vfinal]', `-map ${audioStreamIdx}:a`);
     } else {
       args.push('-map', '[vfinal]');
     }
@@ -93,22 +82,29 @@ export async function POST(req: Request) {
     args.push('-pix_fmt', 'yuv420p');
     args.push('-movflags', '+faststart');
     args.push('-y');
-    args.push(outputFile);
+    
+    // Output to stdout (pipe) instead of file
+    args.push('-f', 'mp4', 'pipe:1');
 
     // Spawn ffmpeg process
-    console.log('[ffmpeg] Total args:', args.length);
-    console.log('[ffmpeg] Image count:', n, 'Has audio:', hasAudio);
+    console.log('[ffmpeg] Building video with base64 data...');
+    console.log('[ffmpeg] Image count:', n, 'Has audio:', !!audioData);
 
-    const result = await new Promise<{ ok: boolean; error?: string; stderr: string }>((resolve) => {
+    const result = await new Promise<{ ok: boolean; error?: string; buffer?: Buffer }>((resolve) => {
       let stderrBuf = '';
       
       const p = spawn('/usr/bin/ffmpeg', args, {
         stdio: ['ignore', 'pipe', 'pipe']
       });
 
+      let stdoutBuf = Buffer.alloc(0);
+
+      p.stdout?.on('data', (chunk: Buffer) => {
+        stdoutBuf = Buffer.concat([stdoutBuf, chunk]);
+      });
+
       p.stderr?.on('data', (chunk: Buffer) => {
         stderrBuf += chunk.toString();
-        // Log progress line
         const lines = chunk.toString().split('\n');
         for (const line of lines) {
           if (line.includes('time=')) {
@@ -121,40 +117,34 @@ export async function POST(req: Request) {
         resolve({ 
           ok: code === 0, 
           error: code !== 0 ? stderrBuf.substring(0, 1000) : undefined,
-          stderr: stderrBuf
+          buffer: code === 0 ? stdoutBuf : undefined
         });
       });
 
       p.on('error', (err) => {
-        resolve({ ok: false, error: err.message, stderr: err.message });
+        resolve({ ok: false, error: err.message, buffer: undefined });
       });
 
       // Timeout after 120s
       setTimeout(() => {
         p.kill('SIGTERM');
-        resolve({ ok: false, error: 'Timed out after 120s', stderr: '' });
+        resolve({ ok: false, error: 'Timed out after 120s', buffer: undefined });
       }, 120000);
     });
 
-    if (result.ok || existsSync(outputFile)) {
-      if (existsSync(outputFile)) {
-        const fsize = statSync(outputFile).size;
-        console.log('[ffmpeg] Success! Output:', fsize.toLocaleString(), 'bytes');
-        
-        const urlPath = outputFile.replace(join(process.cwd(), 'public'), '');
-        
-        return NextResponse.json({ 
-          url: urlPath,
-          filepath: outputFile,
-          message: `Video created successfully (${fsize.toLocaleString()} bytes)`
-        });
-      }
+    if (result.ok && result.buffer) {
+      // Return video as base64 data URL
+      const videoBase64 = result.buffer.toString('base64');
+      
+      return NextResponse.json({ 
+        url: `data:video/mp4;base64,${videoBase64}`,
+        base64: videoBase64,
+        message: `Video created successfully (${result.buffer.length.toLocaleString()} bytes)`
+      });
     } else {
-      throw new Error(result.error || 'FFmpeg did not produce output file');
+      throw new Error(result.error || 'FFmpeg did not produce output');
     }
     
-    // Fallback return (shouldn't reach here)
-    return NextResponse.json({ error: result.error || 'Unknown error' }, { status: 500 });
   } catch (error: any) {
     console.error('Error in /api/video:', error.message);
     return NextResponse.json(
